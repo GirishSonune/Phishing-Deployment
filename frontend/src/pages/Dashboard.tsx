@@ -12,7 +12,9 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
 
   React.useEffect(() => {
-    fetch('http://localhost:5000/api/history')
+    // fetch('http://localhost:5000/api/history')
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+    fetch(`${baseUrl}/api/history`)
       .then(res => res.json())
       .then(data => {
         setHistoryData(data);

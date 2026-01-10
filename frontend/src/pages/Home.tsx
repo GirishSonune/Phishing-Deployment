@@ -33,8 +33,10 @@ export default function Home() {
     setCurrentResult(null); // Reset previous result
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/predict';
-      const response = await fetch(apiUrl, {
+      // const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000/api/predict';
+      // const response = await fetch(apiUrl, {
+      const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+      const response = await fetch(`${baseUrl}/api/predict`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
