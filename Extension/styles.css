@@ -15,8 +15,9 @@
   justify-content: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   white-space: nowrap;
-  pointer-events: none;
-  /* Make it non-interactive */
+  pointer-events: auto;
+  /* Allow clicks */
+  cursor: pointer;
 }
 
 /* Style for the 'active' indicator on focused inputs */

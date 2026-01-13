@@ -5,7 +5,8 @@
   "description": "Shows an indicator on text fields and selected text.",
   "permissions": [
     "storage",
-    "tabs"
+    "tabs",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://phishing-backend-api-ghb2abdha5fsadbb.canadacentral-01.azurewebsites.net/*",

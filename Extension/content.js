@@ -95,13 +95,13 @@ const handleSelectionChange = () => {
               message = `${response.prediction} (${response.riskScore ? response.riskScore.toFixed(1) + '%' : ''})`;
             }
 
-            showSelectionIcon(range, message, isPhishing);
+            showSelectionIcon(range, message, isPhishing, text);
           }
         });
       } else {
         // Just show the icon as before if it's not clearly a URL (or maybe just ignore non-URLs?)
         // For now, let's keep the old behavior for non-URLs but pass no message
-        showSelectionIcon(range, null, false);
+        showSelectionIcon(range, null, false, text);
       }
     }
   } else {
@@ -109,7 +109,7 @@ const handleSelectionChange = () => {
   }
 };
 
-function showSelectionIcon(range, message = null, isPhishing = false) {
+function showSelectionIcon(range, message = null, isPhishing = false, text = null) {
   const iconId = 'aegis-selection-icon';
   removeMessage(iconId);
 
@@ -148,9 +148,11 @@ function showSelectionIcon(range, message = null, isPhishing = false) {
   popup.addEventListener('click', (event) => {
     event.stopPropagation();
     try {
-      chrome.runtime.sendMessage({ action: "openAegisWebsite" });
+      chrome.runtime.sendMessage({ action: "openAegisWebsite", url: text });
     } catch (err) {
-      window.open('https://phishing-detection-bfezd0d4frh9ecfr.canadacentral-01.azurewebsites.net/', '_blank');
+      const baseUrl = 'https://phishing-backend-api-ghb2abdha5fsadbb.canadacentral-01.azurewebsites.net/';
+      const targetUrl = text ? `${baseUrl}?url_to_check=${encodeURIComponent(text)}` : baseUrl;
+      window.open(targetUrl, '_blank');
     }
     removeMessage(iconId);
   });
@@ -182,6 +184,24 @@ function showMessage(elementId, text, styleClass, targetElement) {
   popup.id = popupId;
   popup.className = `aegis-popup ${styleClass}`;
   popup.textContent = text;
+
+  // Add click listener (using mousedown to prevent blur from removing it first)
+  popup.addEventListener('mousedown', (event) => {
+    event.preventDefault(); // Prevents the input from blurring immediately
+    event.stopPropagation();
+
+    const value = targetElement.value || targetElement.textContent;
+    if (value && value.trim().length > 0) {
+      try {
+        chrome.runtime.sendMessage({ action: "openAegisWebsite", url: value });
+      } catch (err) {
+        const baseUrl = 'https://phishing-backend-api-ghb2abdha5fsadbb.canadacentral-01.azurewebsites.net/';
+        const targetUrl = `${baseUrl}?url_to_check=${encodeURIComponent(value)}`;
+        window.open(targetUrl, '_blank');
+      }
+    }
+  });
+
   document.body.appendChild(popup);
 
   const rect = targetElement.getBoundingClientRect();
@@ -200,7 +220,20 @@ function removeMessage(popupId) {
 
 // --- 4. INITIALIZATION ---
 
+function checkAndAutofill() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlToCheck = urlParams.get('url_to_check');
+
+  if (urlToCheck) {
+    const input = document.querySelector('input[name="url"]');
+    if (input) {
+      input.value = urlToCheck;
+    }
+  }
+}
+
 document.addEventListener('selectionchange', handleSelectionChange);
 initializeInputListeners();
 const observer = new MutationObserver(() => initializeInputListeners());
 observer.observe(document.body, { childList: true, subtree: true });
+checkAndAutofill();
