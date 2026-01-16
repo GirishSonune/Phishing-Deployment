@@ -65,4 +65,4 @@ jobs:
           app-name: 'smishing-backend-api'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_B1CB70F46C9A446A84826EBFF7D8A76D }}
-          package: smishing
+
