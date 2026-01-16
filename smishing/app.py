@@ -7,15 +7,22 @@ from nltk.stem.porter import PorterStemmer
 from flask_cors import CORS
 
 # Ensure NLTK data is downloaded
+# Ensure NLTK data is downloaded to a writeable directory
+import os
+nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
+if not os.path.exists(nltk_data_path):
+    os.makedirs(nltk_data_path)
+nltk.data.path.append(nltk_data_path)
+
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
-    nltk.download('punkt')
+    nltk.download('punkt', download_dir=nltk_data_path)
 
 try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
-    nltk.download('stopwords')
+    nltk.download('stopwords', download_dir=nltk_data_path)
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes

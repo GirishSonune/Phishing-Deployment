@@ -1,226 +1,226 @@
-# app.py
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import joblib
-import pandas as pd
+import json
+import os
 import re
 from urllib.parse import urlparse
-import os
-
-try:
-    import shap
-    SHAP_AVAILABLE = True
-except ImportError:
-    SHAP_AVAILABLE = False
-    print("SHAP not available. Explanations will be disabled.")
-import numpy as np
+from predict import predict_with_explain
 
 app = Flask(__name__)
-# Configure CORS to allow requests from frontend (localhost:5173)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app)
 
-# -------- Load model ----------
-MODEL_PATH = "phishing_rf_model.pkl"
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(
-        f"Model file not found at {MODEL_PATH}. Place phishing_rf_model.pkl next to app.py"
-    )
+# -------------------------
+# Validations & Normalization
+# -------------------------
 
-model_data = joblib.load(MODEL_PATH)
-model = model_data.get("model") if isinstance(model_data, dict) else model_data
+def normalize_url(url):
+    """
+    Normalizes the URL by removing protocol and www.
+    Example: https://www.google.com/ -> google.com/
+    """
+    if not url:
+        return ""
+    
+    # Remove protocol
+    url = re.sub(r'^https?://', '', url, flags=re.IGNORECASE)
+    # Remove www.
+    url = re.sub(r'^www\.', '', url, flags=re.IGNORECASE)
+    # Remove trailing slash
+    if url.endswith('/'):
+        url = url[:-1]
+        
+    return url.lower()
 
-FEATURE_NAMES = model_data.get(
-    "features",
-    [
-        "having_IPhaving_IP_Address",
-        "URLURL_Length",
-        "Shortining_Service",
-        "having_At_Symbol",
-        "double_slash_redirecting",
-        "Prefix_Suffix",
-        "having_Sub_Domain",
-        "HTTPS_token",
-    ],
-) if isinstance(model_data, dict) else [
-    "having_IPhaving_IP_Address",
-    "URLURL_Length",
-    "Shortining_Service",
-    "having_At_Symbol",
-    "double_slash_redirecting",
-    "Prefix_Suffix",
-    "having_Sub_Domain",
-    "HTTPS_token",
-]
+# -------------------------
+# Whitelist Loading
+# -------------------------
 
-# -------- SHAP Explainer ----------
-explainer = None
-if SHAP_AVAILABLE:
+WHITELIST_DOMAINS = set()
+
+def load_whitelist():
+    """Loads trusted domains from whitelist.json"""
+    global WHITELIST_DOMAINS
     try:
-        # TreeExplainer works perfectly for RandomForest
-        explainer = shap.TreeExplainer(model)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        whitelist_path = os.path.join(base_dir, "whitelist.json")
+        
+        with open(whitelist_path, 'r') as f:
+            data = json.load(f)
+            # Normalize all domains in the whitelist for consistent matching
+            WHITELIST_DOMAINS = {d.lower() for d in data.get("trusted_domains", [])}
+            print(f"Loaded {len(WHITELIST_DOMAINS)} domains into whitelist.")
     except Exception as e:
-        print(f"Failed to initialize SHAP explainer: {e}")
-        SHAP_AVAILABLE = False
+        print(f"Error loading whitelist: {e}")
 
-# -------- Feature extraction ----------
-def having_ip(url: str) -> int:
-    return 1 if re.search(r"(\d{1,3}\.){3}\d{1,3}", url) else -1
+# Load whitelist on startup
+load_whitelist()
 
-def url_length_feat(url: str) -> int:
-    length = len(url)
-    if length < 54:
-        return 0
-    elif 54 <= length <= 75:
-        return 1
-    else:
-        return 2
+def is_whitelisted(url):
+    """Checks if the URL's domain is in the whitelist."""
+    normalized = normalize_url(url)
+    
+    # Check exact match or subdomain match
+    # Simple check: extract domain from the incoming URL
+    # But wait, normalize_url just strips http/www.
+    # We should parse the domain properly for checking against the list.
+    
+    try:
+        # Re-add http to use urlparse if missing, to get netloc reliably
+        if not url.startswith(('http://', 'https://')):
+            parse_url = 'http://' + url
+        else:
+            parse_url = url
+            
+        parsed = urlparse(parse_url)
+        domain = parsed.netloc.lower()
+        if domain.startswith('www.'):
+            domain = domain[4:]
+            
+        if domain in WHITELIST_DOMAINS:
+            return True
+            
+        # Check parent domains (e.g. sub.google.com should match google.com)
+        # However, the requirement says "checked in whitelist if found then return Legitimate"
+        # The whitelist contains domains like "google.com".
+        # We should check if the domain ends with any of the whitelisted domains?
+        # Or exact match?
+        # Let's do exact match + subdomains for safety.
+        
+        for trusted in WHITELIST_DOMAINS:
+            if domain == trusted or domain.endswith('.' + trusted):
+                return True
+                
+    except Exception as e:
+        print(f"Whitelist check error: {e}")
+        
+    return False
 
-def shortening_service(url: str) -> int:
-    shorteners = ["bit.ly", "tinyurl.com", "goo.gl", "t.co"]
-    return 1 if any(s in url.lower() for s in shorteners) else -1
+# -------------------------
+# Routes
+# -------------------------
 
-def having_at_symbol(url: str) -> int:
-    return 1 if "@" in url else -1
-
-def double_slash_redirecting(url: str) -> int:
-    path = urlparse(url).path or ""
-    return 1 if "//" in path else -1
-
-def prefix_suffix(url: str) -> int:
-    domain = urlparse(url).netloc.lower()
-    return 1 if "-" in domain else -1
-
-def having_subdomain(url: str) -> int:
-    domain = urlparse(url).netloc
-    dots = domain.count(".")
-    if dots == 1:
-        return -1
-    elif dots == 2:
-        return 0
-    else:
-        return 1
-
-def https_token(url: str) -> int:
-    return 1 if url.lower().startswith("https://") else -1
-
-def extract_features_same_as_dataset(url: str):
-    return [
-        having_ip(url),
-        url_length_feat(url),
-        shortening_service(url),
-        having_at_symbol(url),
-        double_slash_redirecting(url),
-        prefix_suffix(url),
-        having_subdomain(url),
-        https_token(url),
-    ]
-
-# -------- Routes ----------
 @app.route("/", methods=["GET"])
 def home():
     return render_template("index.html")
 
 @app.route("/predict", methods=["POST"])
-def predict():
+def predict_ui():
     url = request.form.get("url", "").strip()
     if not url:
         return render_template("index.html", error="Please enter a URL")
 
-    if not re.match(r"^https?://", url, re.IGNORECASE):
-        url = "http://" + url
+    # 1. URL Normalization
+    # 2. Whitelist Check
+    if is_whitelisted(url):
+        return render_template("index.html", 
+                               url=url, 
+                               prediction="Legitimate", 
+                               confidence="100.0%",
+                               risk_level="Low",
+                               features={},
+                               shap_values={})
 
-    feats = extract_features_same_as_dataset(url)
-    X = pd.DataFrame([feats], columns=FEATURE_NAMES)
-
+    # 3-6. New Model Flow
     try:
-        pred = int(model.predict(X)[0])
-        proba = model.predict_proba(X)[0][pred]
+        result = predict_with_explain(url)
+        # result keys: url, prediction(PHISHING/SAFE), confidence(float 0-1), risk_level, shap_explanation
+        
+        # Map values for UI
+        pred_label = "Phishing" if result["prediction"] == "PHISHING" else "Legitimate"
+        conf_percent = f"{result['confidence']*100:.2f}%"
+        
+        # UI expects features and shap_values dicts likely? 
+        # The new predict_with_explain returns a text explanation in 'shap_explanation'. 
+        # But looking at old app.py, it passed 'features' and 'shap_values' dicts to template.
+        # Let's try to extract them if possible or pass defaults.
+        # predict_with_explain doesn't return raw shap values as dict easily accessable here without modifying it.
+        # But it does return 'shap_explanation' text.
+        
+        return render_template("index.html",
+                               url=url,
+                               prediction=pred_label,
+                               confidence=conf_percent,
+                               risk_level=result["risk_level"],
+                               explanation=result["shap_explanation"], # Pass text explanation
+                               # Passing empty dicts for features/shap if template needs them to avoid crash, 
+                               # assume template logic might need adjustment or is robust.
+                               features={}, 
+                               shap_values={} 
+                              )
     except Exception as e:
-        return render_template("index.html", error=f"Prediction error: {e}")
+        print(f"Prediction error: {e}")
+        return render_template("index.html", error=f"Error: {e}")
 
-    label = "Phishing" if pred == 1 else "Legitimate"
-    feat_display = dict(zip(FEATURE_NAMES, feats))
-
-    # -------- SHAP Explanation ----------
-    shap_explanation = {}
-    if SHAP_AVAILABLE and explainer:
-        try:
-            shap_values = explainer.shap_values(X)
-            # For binary classification: class 1 = phishing
-            shap_vals = shap_values[1][0]
-
-            shap_explanation = dict(
-                sorted(
-                    zip(FEATURE_NAMES, shap_vals),
-                    key=lambda x: abs(x[1]),
-                    reverse=True,
-                )
-            )
-        except Exception as e:
-             print(f"SHAP explanation failed: {e}")
-
-    # Map raw feature names to readable labels
-    FEATURE_MAP = {
-        "having_IPhaving_IP_Address": "IP Address",
-        "URLURL_Length": "URL Length",
-        "Shortining_Service": "Shortening Service",
-        "having_At_Symbol": "@ Symbol",
-        "double_slash_redirecting": "Double Slash Redirect",
-        "Prefix_Suffix": "Prefix/Suffix",
-        "having_Sub_Domain": "Sub-Domain",
-        "HTTPS_token": "HTTPS Token"
-    }
-
-    return render_template(
-        "index.html",
-        url=url,
-        prediction=label,
-        confidence=f"{proba*100:.2f}%",
-        features=feat_display,
-        shap_values=shap_explanation,
-        FEATURE_MAP=FEATURE_MAP
-    )
-
-@app.route("/api/predict", methods=["POST"])
-def api_predict():
-    data = request.get_json() or {}
-    url = data.get("url", "").strip()
-    if not url:
-        return jsonify({"error": "no url provided"}), 400
-
-    if not re.match(r"^https?://", url, re.IGNORECASE):
-        url = "http://" + url
-
-    feats = extract_features_same_as_dataset(url)
-    X = pd.DataFrame([feats], columns=FEATURE_NAMES)
-
+@app.route('/api/predict', methods=['POST'])
+def predict_api():
     try:
-        pred = int(model.predict(X)[0])
-        # Get probability of class 1 (phishing)
-        proba = model.predict_proba(X)[0][1]
-        shap_values_dict = {}
-        if SHAP_AVAILABLE and explainer:
-             try:
-                shap_values = explainer.shap_values(X)[1][0]
-                shap_values_dict = dict(zip(FEATURE_NAMES, shap_values))
-             except Exception:
-                pass
-    except Exception as e:
-        return jsonify({"error": f"prediction failed: {e}"}), 500
-
-    label = "phishing" if pred == 1 else "legitimate"
-
-    return jsonify(
-        {
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({'error': 'No URL provided'}), 400
+        
+        url = data['url']
+        
+        # 1. URL Normalization (internal helper does it, but we keep original for logic)
+        # 2. Whitelist Check
+        if is_whitelisted(url):
+            return jsonify({
+                "url": url,
+                "prediction": "Legitimate",
+                "riskScore": 0,
+                "riskReasons": ["Whitelisted trusted domain"],
+                "confidence": 100.0,
+                "is_whitelisted": True
+            })
+            
+        # 3-6. Feature Extraction -> Model -> Decision -> Response
+        # predict_with_explain handles extraction, model, shap
+        result = predict_with_explain(url)
+        
+        # Map new model output to extension's expected format
+        # Extension expects: prediction, riskScore (0-100), riskReasons, etc.
+        
+        # New model returns: 
+        # {
+        #     "url": url,
+        #     "prediction": "PHISHING" / "SAFE",
+        #     "confidence": 0.xx,
+        #     "risk_level": "High"...,
+        #     "shap_explanation": "text..."
+        # }
+        
+        prediction_label = "Phishing" if result["prediction"] == "PHISHING" else "Legitimate"
+        
+        # Convert confidence 0.0-1.0 to 0-100
+        # Note: In the new model code:
+        # prediction = "PHISHING" if np.argmax(proba) == 1 else "SAFE"
+        # confidence is max(proba).
+        # If it is SAFE (class 0), probability of class 0 is high.
+        # If we want a Risk Score (probability of Phishing), we need proba[1].
+        # But predict_with_explain returns 'confidence' of the *predicted class*.
+        
+        # Let's adjust riskScore based on prediction.
+        if result["prediction"] == "PHISHING":
+            risk_score = result["confidence"] * 100
+        else:
+            # If safe, risk score is (1 - confidence_of_safe) * 100 approx?
+            # Or just low.
+            risk_score = (1.0 - result["confidence"]) * 100
+            
+        # Extension expects specific keys
+        response = {
             "url": url,
-            "prediction": label,
-            "riskScore": proba * 100,
-            "riskReasons": [], # Placeholder for now
-            "features": dict(zip(FEATURE_NAMES, feats)),
-            "shap_values": shap_values_dict,
+            "prediction": prediction_label,
+            "riskScore": round(risk_score, 2),
+            "riskReasons": [result["shap_explanation"]] if result["shap_explanation"] else [],
+            "features": {}, # Could populate if needed
+            "shap_values": {} # Could populate if needed
         }
-    )
+        
+        return jsonify(response)
 
-# -------- Main ----------
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    except Exception as e:
+        print(f"Error processing request: {e}")
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(port=5000, debug=True)

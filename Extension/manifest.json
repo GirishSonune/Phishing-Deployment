@@ -10,7 +10,8 @@
   ],
   "host_permissions": [
     "https://phishing-backend-api-ghb2abdha5fsadbb.canadacentral-01.azurewebsites.net/*",
-    "http://127.0.0.1:5000/*"
+    "http://127.0.0.1:5000/*",
+    "https://smishing-backend-api-arandsfxhwcxaxc4.canadacentral-01.azurewebsites.net/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -31,10 +32,11 @@
   ],
   "action": {
     "default_title": "Aegis Phishing Detector",
-    "default_icon": "icon48.png"
+    "default_popup": "popup.html",
+    "default_icon": "icon48.jpg"
   },
   "icons": {
-    "48": "icon48.png",
-    "128": "icon128.png"
+    "48": "icon48.jpg",
+    "128": "icon128.jpg"
   }
 }
