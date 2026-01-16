@@ -54,11 +54,15 @@ def transform_text(text):
     return " ".join(y)
 
 # Load model and vectorizer
+# Load model and vectorizer
+load_error = None
 try:
-    tfidf = pickle.load(open('vectorizer.pkl','rb'))
-    model = pickle.load(open('model.pkl','rb'))
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    tfidf = pickle.load(open(os.path.join(base_dir, 'vectorizer.pkl'), 'rb'))
+    model = pickle.load(open(os.path.join(base_dir, 'model.pkl'), 'rb'))
 except Exception as e:
     print(f"Error loading model/vectorizer: {e}")
+    load_error = str(e)
     tfidf = None
     model = None
 
@@ -81,7 +85,7 @@ def home():
             else:
                 result = "Not Smishing"
         else:
-             result = "Model not loaded"
+             result = f"Model not loaded. Error: {load_error}"
             
     return render_template('index.html', result=result, message=message)
 
