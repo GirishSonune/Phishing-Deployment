@@ -40,7 +40,11 @@ const handleBlur = (event) => {
 
         if (response.prediction) {
           const isPhishing = response.prediction.toLowerCase() === 'phishing';
-          message = `${response.prediction} (${response.riskScore ? response.riskScore.toFixed(1) + '%' : 'N/A'})`;
+          let displayScore = response.riskScore;
+          if (!isPhishing && displayScore !== undefined) {
+            displayScore = 100 - displayScore;
+          }
+          message = `${response.prediction} (${displayScore !== undefined ? displayScore.toFixed(1) + '%' : 'N/A'})`;
           style = isPhishing ? "aegis-popup-danger" : "aegis-popup-safe";
         } else if (response.error) {
           message = "Error: " + response.error;
@@ -92,7 +96,11 @@ const handleSelectionChange = () => {
 
             if (response.prediction) {
               isPhishing = response.prediction.toLowerCase() === 'phishing';
-              message = `${response.prediction} (${response.riskScore ? response.riskScore.toFixed(1) + '%' : ''})`;
+              let displayScore = response.riskScore;
+              if (!isPhishing && displayScore !== undefined) {
+                displayScore = 100 - displayScore;
+              }
+              message = `${response.prediction} (${displayScore !== undefined ? displayScore.toFixed(1) + '%' : ''})`;
             }
 
             showSelectionIcon(range, message, isPhishing, text);
@@ -126,6 +134,8 @@ function showSelectionIcon(range, message = null, isPhishing = false, text = nul
     popup.style.gap = '8px';
     popup.style.padding = '4px 8px';
     popup.style.borderRadius = '4px';
+    popup.style.width = 'auto';
+    popup.style.height = 'auto';
     popup.style.backgroundColor = isPhishing ? '#ffcccc' : '#ccffcc';
     popup.style.border = isPhishing ? '1px solid #cc0000' : '1px solid #00cc00';
     popup.style.color = isPhishing ? '#cc0000' : '#006600';
@@ -207,7 +217,14 @@ function showMessage(elementId, text, styleClass, targetElement) {
   const rect = targetElement.getBoundingClientRect();
   popup.style.top = `${window.scrollY + rect.top}px`;
   popup.style.left = `${window.scrollX + rect.right + 10}px`;
-  popup.style.height = `${rect.height}px`;
+
+  // Match height for inputs (like search bars), but use auto for textareas to avoid huge buttons
+  if (targetElement.tagName === 'INPUT') {
+    popup.style.height = `${rect.height}px`;
+  } else {
+    popup.style.height = 'auto';
+    popup.style.padding = '8px 12px'; // Add some padding for textareas so it looks nice
+  }
 }
 
 function removeMessage(popupId) {

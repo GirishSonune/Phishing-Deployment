@@ -1,6 +1,0 @@
-.agent
-__pycache__/
-instance/
-*.pyc
-.env
-venv/
