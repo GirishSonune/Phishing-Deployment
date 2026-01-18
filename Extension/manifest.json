@@ -33,10 +33,10 @@
   "action": {
     "default_title": "Aegis Phishing Detector",
     "default_popup": "popup.html",
-    "default_icon": "icon48.jpg"
+    "default_icon": "icon48.png"
   },
   "icons": {
-    "48": "icon48.jpg",
-    "128": "icon128.jpg"
+    "48": "icon48.png",
+    "128": "icon128.png"
   }
 }

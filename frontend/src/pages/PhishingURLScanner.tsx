@@ -1,33 +1,16 @@
 import React, { useState } from 'react';
-import { 
-  MagnifyingGlassIcon, 
-  ShieldCheckIcon, 
-  ExclamationTriangleIcon, 
+import {
+  MagnifyingGlassIcon,
+  ShieldCheckIcon,
+  ExclamationTriangleIcon,
   CheckCircleIcon,
   ArrowLeftIcon,
-  ChartBarIcon
+  FingerPrintIcon
 } from '@heroicons/react/24/outline';
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend,
-} from 'chart.js';
-import { Bar } from 'react-chartjs-2';
+import { db } from '../firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { useAuth } from '../contexts/AuthContext';
 import PhishingExplanation from './PhishingExplanation';
-
-// Register ChartJS for technical visualizations
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend
-);
 
 interface PhishingURLScannerProps {
   onBack: () => void;
@@ -37,59 +20,82 @@ const PhishingURLScanner: React.FC<PhishingURLScannerProps> = ({ onBack }) => {
   const [url, setUrl] = useState('');
   const [isChecking, setIsChecking] = useState(false);
   const [currentResult, setCurrentResult] = useState<any>(null);
+  const [actionSaved, setActionSaved] = useState(false);
+  const { user } = useAuth();
 
-  /**
-   * Main AI Model Connection
-   * Calls the backend /predict endpoint to get phishing scores and features
-   */
+  const analyzeURL = async (submittedUrl: string) => {
+    try {
+      const response = await fetch('http://localhost:5000/api/predict', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url: submittedUrl }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error fetching prediction:', error);
+      throw error;
+    }
+  };
+
   const checkURL = async () => {
     if (!url.trim()) return;
 
     setIsChecking(true);
     setCurrentResult(null);
+    setActionSaved(false);
 
     try {
-      const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
-      const response = await fetch(`${baseUrl}/api/predict`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch prediction');
-      }
-
-      const data = await response.json();
+      // Use the mock function
+      const data = await analyzeURL(url);
       setCurrentResult(data);
-
     } catch (error: any) {
       console.error("Error checking URL:", error);
-      alert(`Failed to analyze the URL. ${error.message || "Please ensure the backend server is running."}`);
+      alert("Failed to analyze URL.");
     } finally {
       setIsChecking(false);
     }
   };
 
-  // Technical chart data for SHAP values
-  const chartData = currentResult?.shap_values ? {
-    labels: Object.keys(currentResult.shap_values),
-    datasets: [
-      {
-        label: 'Impact on Prediction (Positive = Phishing Risk)',
-        data: Object.values(currentResult.shap_values),
-        backgroundColor: Object.values(currentResult.shap_values).map((val: any) =>
-          val > 0 ? 'rgba(239, 68, 68, 0.7)' : 'rgba(34, 197, 94, 0.7)'
-        ),
-        borderColor: Object.values(currentResult.shap_values).map((val: any) =>
-          val > 0 ? 'rgb(239, 68, 68)' : 'rgb(34, 197, 94)'
-        ),
-        borderWidth: 1,
-      },
-    ],
-  } : null;
+  const handleAction = async (action: 'blocked' | 'clicked' | 'ignored') => {
+    if (!currentResult || !user) return;
+
+    try {
+      // Extract risk reasons from features where value is 1 (indicating presence of phishing characteristic)
+      // or from shap values if high impact
+      const riskReasons = Object.entries(currentResult.features || {})
+        .filter(([key, value]) => String(value) === '1')
+        .map(([key]) => key.replace(/_/g, ' '));
+
+      const historyItem = {
+        userId: user.id, // Associate with logged in user
+        url: currentResult.url,
+        riskScore: currentResult.riskScore,
+        riskReasons: riskReasons.length > 0 ? riskReasons : ['AI Detection'],
+        date: new Date().toISOString(),
+        actionTaken: action,
+        status: currentResult.prediction === 'phishing' ? 'Suspicious' : 'Safe'
+      };
+
+      await addDoc(collection(db, 'history'), {
+        ...historyItem,
+        timestamp: serverTimestamp()
+      });
+
+      setActionSaved(true);
+      // Optional: Clear input or show success toast
+    } catch (error) {
+      console.error("Error saving action:", error);
+      alert("Failed to save action to history.");
+    }
+  };
 
   const isPhishing = currentResult?.prediction?.toLowerCase() === 'phishing';
 
@@ -114,7 +120,7 @@ const PhishingURLScanner: React.FC<PhishingURLScannerProps> = ({ onBack }) => {
         </p>
       </div>
 
-      {/* Search/Analyze Input */}
+      {/* Search Input */}
       <div className="bg-slate-800/50 backdrop-blur-sm rounded-3xl shadow-2xl border border-slate-700 p-8 mb-12">
         <div className="flex flex-col md:flex-row gap-4">
           <div className="relative flex-grow">
@@ -148,7 +154,7 @@ const PhishingURLScanner: React.FC<PhishingURLScannerProps> = ({ onBack }) => {
 
       {currentResult && (
         <div className="animate-in zoom-in-95 duration-500">
-          {/* Main Status Cards */}
+          {/* Result Summary */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
             <div className={`p-6 rounded-2xl border ${isPhishing ? 'bg-red-500/10 border-red-500/30' : 'bg-green-500/10 border-green-500/30'}`}>
               <div className="flex items-center justify-between mb-4">
@@ -162,10 +168,10 @@ const PhishingURLScanner: React.FC<PhishingURLScannerProps> = ({ onBack }) => {
 
             <div className="p-6 rounded-2xl bg-slate-800 border border-slate-700">
               <h3 className="text-lg font-semibold text-slate-300 mb-4">Risk Probability</h3>
-              <div className="text-3xl font-bold text-sky-400">{(currentResult.riskScore || 0).toFixed(2)}%</div>
+              <div className="text-3xl font-bold text-sky-400">{(currentResult.riskScore).toFixed(2)}%</div>
               <div className="overflow-hidden h-2 mt-4 rounded bg-slate-700">
-                <div 
-                  style={{ width: `${currentResult.riskScore || 0}%` }} 
+                <div
+                  style={{ width: `${currentResult.riskScore}%` }}
                   className={`h-full ${isPhishing ? 'bg-red-500' : 'bg-green-500'} transition-all duration-1000`}
                 ></div>
               </div>
@@ -179,64 +185,58 @@ const PhishingURLScanner: React.FC<PhishingURLScannerProps> = ({ onBack }) => {
             </div>
           </div>
 
-          {/* EXPLAINABILITY COMPONENT - Only shown if prediction is Phishing */}
+          {/* Detailed Explanation Component */}
           {isPhishing && (
-            <PhishingExplanation 
-              features={currentResult.features || {}} 
-              shapValues={currentResult.shap_values} 
+            <PhishingExplanation
+              features={currentResult.features}
+              shapValues={currentResult.shap_values}
             />
           )}
 
-          {/* Technical Visualizations */}
-          <div className={`mt-8 grid grid-cols-1 ${isPhishing ? 'lg:grid-cols-2' : 'lg:grid-cols-1'} gap-8`}>
-            {/* Technical Chart - Only shown if prediction is Phishing */}
-            {isPhishing && (
-              <div className="p-8 rounded-3xl bg-slate-800 border border-slate-700 shadow-xl min-h-[400px]">
-                <h3 className="text-xl font-bold text-white mb-8 flex items-center gap-3">
-                  <ChartBarIcon className="h-6 w-6 text-sky-500" /> Technical Influence Map
-                </h3>
-                {chartData ? (
-                  <div className="h-[300px]">
-                    <Bar 
-                      data={chartData} 
-                      options={{ 
-                        responsive: true, 
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                          y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
-                          x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
-                        }
-                      }} 
-                    />
-                  </div>
-                ) : (
-                  <div className="text-center py-20 text-slate-500 italic">
-                    No technical SHAP data provided by the AI model.
-                  </div>
-                )}
+          {/* Action Section - The critical part for the user task */}
+          <div className="bg-slate-800/80 border border-slate-700 p-8 rounded-3xl mb-8 text-center backdrop-blur-md mt-8">
+            {!actionSaved ? (
+              <>
+                <h3 className="text-2xl font-bold text-white mb-2">Take Action</h3>
+                <p className="text-slate-400 mb-8">Your decision helps refine our threat intelligence.</p>
+
+                <div className="flex flex-col sm:flex-row justify-center gap-4">
+                  {isPhishing ? (
+                    <>
+                      <button
+                        onClick={() => handleAction('blocked')}
+                        className="flex-1 max-w-xs bg-red-600 hover:bg-red-500 text-white font-bold py-4 px-6 rounded-xl transition-colors flex items-center justify-center gap-2"
+                      >
+                        <ShieldCheckIcon className="h-5 w-5" /> Block & Report
+                      </button>
+                      <button
+                        onClick={() => handleAction('clicked')}
+                        className="flex-1 max-w-xs bg-slate-700 hover:bg-slate-600 text-slate-300 font-semibold py-4 px-6 rounded-xl transition-colors"
+                      >
+                        Visit Despite Warning
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleAction('ignored')} // For safe sites, "Ignored" means "Proceeded safely" in this context logic
+                        className="flex-1 max-w-xs bg-green-600 hover:bg-green-500 text-white font-bold py-4 px-6 rounded-xl transition-colors flex items-center justify-center gap-2"
+                      >
+                        <CheckCircleIcon className="h-5 w-5" /> Mark as Safe & Proceed
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="py-2">
+                <div className="inline-flex items-center justify-center p-3 rounded-full bg-green-500/20 text-green-400 mb-4">
+                  <FingerPrintIcon className="h-8 w-8" />
+                </div>
+                <h3 className="text-xl font-bold text-white">Action Recorded</h3>
+                <p className="text-slate-400">This event has been logged to your dashboard.</p>
               </div>
             )}
-
-            {/* Feature Table - Always shown but expands if Map is hidden */}
-            <div className="p-8 rounded-3xl bg-slate-800 border border-slate-700 shadow-xl overflow-hidden">
-              <h3 className="text-xl font-bold text-white mb-8">Extracted Key Features</h3>
-              <div className={`grid grid-cols-1 ${isPhishing ? 'sm:grid-cols-2' : 'sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4'} gap-4 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar`}>
-                {currentResult.features && Object.entries(currentResult.features).map(([key, value]: any) => (
-                  <div key={key} className="p-4 bg-slate-900/50 rounded-2xl border border-slate-700 flex flex-col justify-between hover:border-sky-500/30 transition-colors">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block truncate">
-                      {key}
-                    </span>
-                    <div className="flex justify-between items-end">
-                      <span className={`text-xl font-mono font-bold ${Number(value) === 1 ? 'text-red-400' : 'text-green-400'}`}>
-                        {String(value)}
-                      </span>
-                      <div className={`h-1.5 w-1.5 rounded-full ${Number(value) === 1 ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         </div>
       )}

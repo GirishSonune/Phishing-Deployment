@@ -38,7 +38,7 @@ export default function Landing() {
 
             <div className="flex flex-col sm:flex-row justify-center items-center space-y-4 sm:space-y-0 sm:space-x-6 animate-fade-in-up delay-300">
               <Link
-                to="/home"
+                to="/register"
                 className="group relative px-8 py-4 bg-primary-600 rounded-xl font-bold text-lg shadow-lg shadow-primary-500/30 hover:shadow-primary-500/50 hover:bg-primary-500 transition-all duration-300 w-full sm:w-auto"
               >
                 <span className="flex items-center justify-center">

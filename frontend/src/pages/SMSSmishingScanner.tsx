@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import {
-  MessageSquare,
-  ArrowLeft,
+import { 
+  MessageSquare, 
+  ArrowLeft, 
   CheckCircle,
   ShieldAlert,
   Zap
@@ -19,46 +19,25 @@ const SMSSmishingScanner: React.FC<SMSSmishingScannerProps> = ({ onBack }) => {
   const analyzeSMS = async () => {
     if (!message.trim()) return;
     setIsAnalyzing(true);
-    setResult(null);
-
-    try {
-      const baseUrl = import.meta.env.VITE_SMISHING_API_URL || 'http://localhost:5001';
-      const response = await fetch(`${baseUrl}/api/predict`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch prediction');
-      }
-
-      const data = await response.json();
-
-      // Map API response to UI expected format
-      // API returns: { original_message, prediction, confidence, riskScore }
-      // UI expects: { prediction, confidence, threats }
-
-      const isSmishing = data.prediction === 'Smishing';
-
+    
+    // Simulating NLP analysis
+    setTimeout(() => {
+      const isSmishing = message.toLowerCase().includes('win') || 
+                        message.toLowerCase().includes('bank') || 
+                        message.toLowerCase().includes('verify') ||
+                        message.toLowerCase().includes('gift');
+      
       setResult({
-        prediction: data.prediction,
-        confidence: (data.confidence * 100).toFixed(1), // Assuming API returns 0.0-1.0 or similar, adjust if needed
+        prediction: isSmishing ? 'Smishing' : 'Safe',
+        confidence: isSmishing ? 92.4 : 96.8,
         threats: isSmishing ? [
-          'High probability of social engineering',
-          'Content matches known smishing patterns',
-          `Risk Score: ${data.riskScore?.toFixed(2) || 'N/A'}`
+          'Urgent language detected',
+          'Potential credential harvesting lure',
+          'Suspicious call-to-action'
         ] : ['No significant threats detected']
       });
-
-    } catch (error: any) {
-      console.error("Error analyzing SMS:", error);
-      alert(`Failed to analyze the message. ${error.message || "Please ensure the Smishing backend server is running on port 5001."}`);
-    } finally {
       setIsAnalyzing(false);
-    }
+    }, 1200);
   };
 
   return (
