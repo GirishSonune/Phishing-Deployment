@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import json
+import sqlite3
 import os
 import re
 from urllib.parse import urlparse
@@ -32,68 +32,113 @@ def normalize_url(url):
     return url.lower()
 
 # -------------------------
-# Whitelist Loading
+# Whitelist DB (whitelist.db)
 # -------------------------
 
-WHITELIST_DOMAINS = set()
+# Path to the SQLite whitelist database (same folder as this file)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WHITELIST_DB_PATH = os.path.join(BASE_DIR, "whitelist.db")
 
-def load_whitelist():
-    """Loads trusted domains from whitelist.json"""
-    global WHITELIST_DOMAINS
+# Total number of entries in the DB — used to normalize rank → confidence.
+# With ~1 million entries (rank 1 to 1,000,000):
+#   rank 1        → 99% confidence  (most trusted)
+#   rank 1,000,000 → 75% confidence (least trusted but still whitelisted)
+WHITELIST_MAX_RANK = 1_000_000
+CONFIDENCE_MAX = 99.0
+CONFIDENCE_MIN = 75.0
+
+def rank_to_confidence(rank: int) -> float:
+    """
+    Maps a whitelist rank (1 = most trusted) to a confidence percentage.
+    Output range: 75.0% (lowest rank) to 99.0% (rank 1).
+    Formula: confidence = 99 - ((rank - 1) / (MAX_RANK - 1)) * 24
+    """
+    rank = max(1, min(rank, WHITELIST_MAX_RANK))  # clamp just in case
+    confidence = CONFIDENCE_MAX - ((rank - 1) / (WHITELIST_MAX_RANK - 1)) * (CONFIDENCE_MAX - CONFIDENCE_MIN)
+    return round(confidence, 2)
+
+def extract_domain(url: str) -> str:
+    """Extracts the bare domain (no www, no protocol) from a URL."""
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        whitelist_path = os.path.join(base_dir, "whitelist.json")
-        
-        with open(whitelist_path, 'r') as f:
-            data = json.load(f)
-            # Normalize all domains in the whitelist for consistent matching
-            WHITELIST_DOMAINS = {d.lower() for d in data.get("trusted_domains", [])}
-            print(f"Loaded {len(WHITELIST_DOMAINS)} domains into whitelist.")
-    except Exception as e:
-        print(f"Error loading whitelist: {e}")
-
-# Load whitelist on startup
-load_whitelist()
-
-def is_whitelisted(url):
-    """Checks if the URL's domain is in the whitelist."""
-    normalized = normalize_url(url)
-    
-    # Check exact match or subdomain match
-    # Simple check: extract domain from the incoming URL
-    # But wait, normalize_url just strips http/www.
-    # We should parse the domain properly for checking against the list.
-    
-    try:
-        # Re-add http to use urlparse if missing, to get netloc reliably
         if not url.startswith(('http://', 'https://')):
-            parse_url = 'http://' + url
-        else:
-            parse_url = url
-            
-        parsed = urlparse(parse_url)
+            url = 'http://' + url
+        parsed = urlparse(url)
         domain = parsed.netloc.lower()
         if domain.startswith('www.'):
             domain = domain[4:]
-            
-        if domain in WHITELIST_DOMAINS:
-            return True
-            
-        # Check parent domains (e.g. sub.google.com should match google.com)
-        # However, the requirement says "checked in whitelist if found then return Legitimate"
-        # The whitelist contains domains like "google.com".
-        # We should check if the domain ends with any of the whitelisted domains?
-        # Or exact match?
-        # Let's do exact match + subdomains for safety.
-        
-        for trusted in WHITELIST_DOMAINS:
-            if domain == trusted or domain.endswith('.' + trusted):
-                return True
-                
+        return domain
+    except Exception:
+        return ""
+
+def get_whitelist_entry(url: str):
+    """
+    Looks up the domain (and its parent domains) in whitelist.db.
+    Returns the matching row as a dict with keys 'url' and 'rank',
+    or None if not found.
+
+    Lookup order:
+      1. Exact domain match          (e.g. maps.google.com)
+      2. Parent domain match         (e.g. google.com for maps.google.com)
+    The lowest rank (most trusted) match is returned when multiple entries exist.
+    """
+    domain = extract_domain(url)
+    if not domain:
+        return None
+
+    # Build list of candidate domains to check: exact + parent domains
+    # e.g. "a.b.google.com" → ["a.b.google.com", "b.google.com", "google.com"]
+    parts = domain.split('.')
+    candidates = ['.'.join(parts[i:]) for i in range(len(parts) - 1)]  # excludes TLD-only
+    candidates.insert(0, domain)  # exact match first
+
+    try:
+        conn = sqlite3.connect(WHITELIST_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        placeholders = ','.join('?' for _ in candidates)
+        query = f"""
+            SELECT url, rank FROM whitelist
+            WHERE url IN ({placeholders})
+            ORDER BY rank ASC
+            LIMIT 1
+        """
+        cursor.execute(query, candidates)
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return {"url": row["url"], "rank": row["rank"]}
     except Exception as e:
-        print(f"Whitelist check error: {e}")
-        
-    return False
+        print(f"Whitelist DB lookup error: {e}")
+
+    return None
+
+def is_whitelisted(url: str):
+    """
+    Returns (True, rank) if the URL is in the whitelist, else (False, None).
+    """
+    entry = get_whitelist_entry(url)
+    if entry:
+        return True, entry["rank"]
+    return False, None
+
+# Verify DB is accessible on startup
+def check_whitelist_db():
+    if not os.path.exists(WHITELIST_DB_PATH):
+        print(f"WARNING: whitelist.db not found at {WHITELIST_DB_PATH}")
+    else:
+        try:
+            conn = sqlite3.connect(WHITELIST_DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM whitelist")
+            count = cursor.fetchone()[0]
+            conn.close()
+            print(f"whitelist.db loaded successfully — {count:,} entries found.")
+        except Exception as e:
+            print(f"ERROR: Could not read whitelist.db — {e}")
+
+check_whitelist_db()
 
 # -------------------------
 # Routes
@@ -111,45 +156,41 @@ def predict_ui():
 
     # 1. URL Normalization
     # 2. Whitelist Check
-    if is_whitelisted(url):
-        return render_template("index.html", 
-                               url=url, 
-                               prediction="Legitimate", 
-                               confidence="100.0%",
-                               risk_level="Low",
-                               features={},
-                               shap_values={})
+    whitelisted, rank = is_whitelisted(url)
+    if whitelisted:
+        confidence_score = rank_to_confidence(rank)
+        return render_template(
+            "index.html",
+            url=url,
+            prediction="Legitimate",
+            confidence=f"{confidence_score}%",
+            risk_level="Low",
+            explanation=f"This domain is on the trusted whitelist (rank #{rank:,} of {WHITELIST_MAX_RANK:,}).",
+            features={},
+            shap_values={}
+        )
 
-    # 3-6. New Model Flow
+    # 3-6. ML Model Flow
     try:
         result = predict_with_explain(url)
-        # result keys: url, prediction(PHISHING/SAFE), confidence(float 0-1), risk_level, shap_explanation
-        
-        # Map values for UI
+
         pred_label = "Phishing" if result["prediction"] == "PHISHING" else "Legitimate"
-        conf_percent = f"{result['confidence']*100:.2f}%"
-        
-        # UI expects features and shap_values dicts likely? 
-        # The new predict_with_explain returns a text explanation in 'shap_explanation'. 
-        # But looking at old app.py, it passed 'features' and 'shap_values' dicts to template.
-        # Let's try to extract them if possible or pass defaults.
-        # predict_with_explain doesn't return raw shap values as dict easily accessable here without modifying it.
-        # But it does return 'shap_explanation' text.
-        
-        return render_template("index.html",
-                               url=url,
-                               prediction=pred_label,
-                               confidence=conf_percent,
-                               risk_level=result["risk_level"],
-                               explanation=result["shap_explanation"], # Pass text explanation
-                               # Passing empty dicts for features/shap if template needs them to avoid crash, 
-                               # assume template logic might need adjustment or is robust.
-                               features={}, 
-                               shap_values={} 
-                              )
+        conf_percent = f"{result['confidence'] * 100:.2f}%"
+
+        return render_template(
+            "index.html",
+            url=url,
+            prediction=pred_label,
+            confidence=conf_percent,
+            risk_level=result["risk_level"],
+            explanation=result["shap_explanation"],
+            features={},
+            shap_values={}
+        )
     except Exception as e:
         print(f"Prediction error: {e}")
         return render_template("index.html", error=f"Error: {e}")
+
 
 @app.route('/api/predict', methods=['POST'])
 def predict_api():
@@ -157,70 +198,50 @@ def predict_api():
         data = request.get_json()
         if not data or 'url' not in data:
             return jsonify({'error': 'No URL provided'}), 400
-        
+
         url = data['url']
-        
-        # 1. URL Normalization (internal helper does it, but we keep original for logic)
-        # 2. Whitelist Check
-        if is_whitelisted(url):
+
+        # 1. Whitelist Check
+        whitelisted, rank = is_whitelisted(url)
+        if whitelisted:
+            confidence_score = rank_to_confidence(rank)
+            # Risk score for whitelisted domains is the inverse of confidence
+            # i.e. rank 1 (99% confidence) → risk score ~1, rank 1M (75%) → risk score ~25
+            risk_score = round(100.0 - confidence_score, 2)
             return jsonify({
                 "url": url,
                 "prediction": "Legitimate",
-                "riskScore": 0,
-                "riskReasons": ["Whitelisted trusted domain"],
-                "confidence": 100.0,
+                "riskScore": risk_score,
+                "riskReasons": [f"Whitelisted trusted domain (rank #{rank:,})"],
+                "confidence": confidence_score,
                 "is_whitelisted": True
             })
-            
-        # 3-6. Feature Extraction -> Model -> Decision -> Response
-        # predict_with_explain handles extraction, model, shap
+
+        # 2. ML Model Flow
         result = predict_with_explain(url)
-        
-        # Map new model output to extension's expected format
-        # Extension expects: prediction, riskScore (0-100), riskReasons, etc.
-        
-        # New model returns: 
-        # {
-        #     "url": url,
-        #     "prediction": "PHISHING" / "SAFE",
-        #     "confidence": 0.xx,
-        #     "risk_level": "High"...,
-        #     "shap_explanation": "text..."
-        # }
-        
+
         prediction_label = "Phishing" if result["prediction"] == "PHISHING" else "Legitimate"
-        
-        # Convert confidence 0.0-1.0 to 0-100
-        # Note: In the new model code:
-        # prediction = "PHISHING" if np.argmax(proba) == 1 else "SAFE"
-        # confidence is max(proba).
-        # If it is SAFE (class 0), probability of class 0 is high.
-        # If we want a Risk Score (probability of Phishing), we need proba[1].
-        # But predict_with_explain returns 'confidence' of the *predicted class*.
-        
-        # Let's adjust riskScore based on prediction.
+
         if result["prediction"] == "PHISHING":
             risk_score = result["confidence"] * 100
         else:
-            # If safe, risk score is (1 - confidence_of_safe) * 100 approx?
-            # Or just low.
             risk_score = (1.0 - result["confidence"]) * 100
-            
-        # Extension expects specific keys
+
         response = {
             "url": url,
             "prediction": prediction_label,
             "riskScore": round(risk_score, 2),
             "riskReasons": [result["shap_explanation"]] if result["shap_explanation"] else [],
-            "features": {}, # Could populate if needed
-            "shap_values": {} # Could populate if needed
+            "features": {},
+            "shap_values": {}
         }
-        
+
         return jsonify(response)
 
     except Exception as e:
         print(f"Error processing request: {e}")
         return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
