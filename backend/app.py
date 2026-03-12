@@ -5,9 +5,47 @@ import os
 import re
 from urllib.parse import urlparse
 from predict import predict_with_explain
+from rules import rule_engine
 
 app = Flask(__name__)
 CORS(app)
+
+# -------------------------
+# Feature Map for UI
+# -------------------------
+FEATURE_MAP = {
+    'length_url': 'URL Length',
+    'length_hostname': 'Hostname Length',
+    'ip': 'IP Address in URL',
+    'nb_dots': 'Number of Dots',
+    'nb_hyphens': 'Number of Hyphens',
+    'nb_at': 'Number of @ Symbols',
+    'nb_qm': 'Number of ? Symbols',
+    'nb_and': 'Number of & Symbols',
+    'nb_eq': 'Number of = Symbols',
+    'nb_underscore': 'Number of Underscores',
+    'nb_slash': 'Number of Slashes',
+    'nb_percent': 'Number of Percent Signs',
+    'nb_colon': 'Number of Colons',
+    'nb_www': 'Contains "www"',
+    'nb_com': 'Contains ".com"',
+    'nb_dslash': 'Number of // Symbols',
+    'https_token': 'HTTPS Token present',
+    'ratio_digits_url': 'Ratio of Digits in URL',
+    'ratio_digits_host': 'Ratio of Digits in Hostname',
+    'punycode': 'Punycode URL',
+    'port': 'Non-standard Port',
+    'tld_in_path': 'TLD detected in Path',
+    'tld_in_subdomain': 'TLD detected in Subdomain',
+    'abnormal_subdomain': 'Abnormal Subdomain',
+    'nb_subdomains': 'Number of Subdomains',
+    'prefix_suffix': 'Prefix/Suffix',
+    'random_domain': 'Random Domain Signature',
+    'shortening_service': 'URL Shortening Service',
+    'path_extension': 'Suspicious File Extension',
+    'char_repeat': 'Character Repeats',
+    'phish_hints': 'Phishing Hints found'
+}
 
 # -------------------------
 # Validations & Normalization
@@ -141,6 +179,56 @@ def check_whitelist_db():
 check_whitelist_db()
 
 # -------------------------
+# ML + Rule Engine Flow
+# -------------------------
+
+def get_combined_prediction(url):
+    result = predict_with_explain(url)
+    
+    # Base probability of being phishing
+    ml_prob = result["confidence"] if result["prediction"] == "PHISHING" else 1.0 - result["confidence"]
+    
+    # Rule engine optimization: run only if ML confidence is uncertain
+    rule_score = 0
+    rule_prob = 0.0
+    if 0.3 < ml_prob < 0.7:
+        rule_score = rule_engine(url)
+        rule_prob = min(rule_score / 10.0, 1.0)
+        final_prob = 0.7 * ml_prob + 0.3 * rule_prob
+    else:
+        final_prob = ml_prob
+        
+    pred_label = "Phishing" if final_prob > 0.5 else "Legitimate"
+    abs_conf = final_prob if pred_label == "Phishing" else 1.0 - final_prob
+    
+    if final_prob < 0.4:
+        risk_level = "Low"
+    elif final_prob < 0.7:
+        risk_level = "Medium"
+    else:
+        risk_level = "High"
+        
+    print(f"--- Analysis for {url} ---")
+    print(f"ML Probability: {ml_prob:.4f}")
+    if 0.3 < ml_prob < 0.7:
+        print(f"Rule Score: {rule_score}")
+        print(f"Rule Probability: {rule_prob:.4f}")
+    else:
+        print("Rule Engine: Skipped (High ML Confidence)")
+    print(f"Final Probability: {final_prob:.4f}")
+    print(f"Prediction: {pred_label}\n")
+        
+    return {
+        "prediction": pred_label,
+        "confidence": abs_conf,
+        "risk_level": risk_level,
+        "risk_score": final_prob * 100,
+        "shap_explanation": result.get("shap_explanation", ""),
+        "features": result.get("features_dict", {}),
+        "shap_values": result.get("shap_values_dict", {})
+    }
+
+# -------------------------
 # Routes
 # -------------------------
 
@@ -167,25 +255,26 @@ def predict_ui():
             risk_level="Low",
             explanation=f"This domain is on the trusted whitelist (rank #{rank:,} of {WHITELIST_MAX_RANK:,}).",
             features={},
-            shap_values={}
+            shap_values={},
+            FEATURE_MAP=FEATURE_MAP
         )
 
-    # 3-6. ML Model Flow
+    # 3-6. ML Model + Rule Engine Flow
     try:
-        result = predict_with_explain(url)
+        result = get_combined_prediction(url)
 
-        pred_label = "Phishing" if result["prediction"] == "PHISHING" else "Legitimate"
         conf_percent = f"{result['confidence'] * 100:.2f}%"
 
         return render_template(
             "index.html",
             url=url,
-            prediction=pred_label,
+            prediction=result["prediction"],
             confidence=conf_percent,
             risk_level=result["risk_level"],
             explanation=result["shap_explanation"],
-            features={},
-            shap_values={}
+            features=result["features"],
+            shap_values=result["shap_values"],
+            FEATURE_MAP=FEATURE_MAP
         )
     except Exception as e:
         print(f"Prediction error: {e}")
@@ -217,23 +306,16 @@ def predict_api():
                 "is_whitelisted": True
             })
 
-        # 2. ML Model Flow
-        result = predict_with_explain(url)
-
-        prediction_label = "Phishing" if result["prediction"] == "PHISHING" else "Legitimate"
-
-        if result["prediction"] == "PHISHING":
-            risk_score = result["confidence"] * 100
-        else:
-            risk_score = (1.0 - result["confidence"]) * 100
+        # 2. ML Model + Rule Engine Flow
+        result = get_combined_prediction(url)
 
         response = {
             "url": url,
-            "prediction": prediction_label,
-            "riskScore": round(risk_score, 2),
+            "prediction": result["prediction"],
+            "riskScore": round(result["risk_score"], 2),
             "riskReasons": [result["shap_explanation"]] if result["shap_explanation"] else [],
-            "features": {},
-            "shap_values": {}
+            "features": result["features"],
+            "shap_values": result["shap_values"]
         }
 
         return jsonify(response)

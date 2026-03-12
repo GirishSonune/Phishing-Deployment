@@ -1,5 +1,3 @@
-# explain.py
-
 import shap
 import numpy as np
 

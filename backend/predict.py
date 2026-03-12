@@ -1,5 +1,3 @@
-# predict.py
-
 import joblib
 import numpy as np
 import os
@@ -14,7 +12,7 @@ from explain import get_shap_explainer, shap_explanation, shap_to_text
 # Get the directory where this script is located
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-MODEL_PATH = os.path.join(BASE_DIR, "Model", "catboost_phishing_model.pkl")
+MODEL_PATH = os.path.join(BASE_DIR, "Model", "lexical_feature_catboost_model.pkl")
 FEATURES_PATH = os.path.join(BASE_DIR, "Model", "feature_columns.pkl")
 BACKGROUND_PATH = os.path.join(BASE_DIR, "Model", "shap_background.pkl")
 
@@ -57,14 +55,23 @@ def predict_with_explain(url):
         explainer = get_shap_explainer(model, background_data)
         shap_vals = shap_explanation(explainer, features)
         shap_text = shap_to_text(shap_vals, features)
+        
+        # Extract raw values for frontend visualization
+        if isinstance(shap_vals, list):
+            shap_dict = dict(zip(features.columns, shap_vals[1][0]))
+        else:
+            shap_dict = dict(zip(features.columns, shap_vals[0]))
     except Exception as e:
         print(f"SHAP Error: {e}")
         shap_text = "Explanation unavailable"
+        shap_dict = {}
 
     return {
         "url": url,
         "prediction": prediction,
         "confidence": round(confidence, 3),
         "risk_level": risk,
-        "shap_explanation": shap_text
+        "shap_explanation": shap_text,
+        "features_dict": features.iloc[0].to_dict(),
+        "shap_values_dict": shap_dict
     }
